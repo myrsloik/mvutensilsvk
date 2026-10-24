@@ -1,0 +1,182 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Shader Files">
+      <UniqueIdentifier>{0E5A6C34-2B8D-4E4B-9C55-7D1F2A9E8B61}</UniqueIdentifier>
+      <Extensions>comp;glsl;py</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="..\src\Common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\FilterShared.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\SuperLayout.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\src\VulkanContext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\Analyse.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\Compensate.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\Degrain.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\EntryPoint.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\FilterShared.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\Flow.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\FlowInterpolate.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\Mask.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\Recalculate.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\SCDetection.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\Super.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\SuperLayout.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\VectorConvert.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\src\VulkanContext.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="..\src\shaders\compensate.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\degrain.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\degrain_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\degrain_count.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\degrain_weights.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\embed_shaders.py">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\flow_blur.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\flow_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\flow_fetch.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\flow_inter.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\flow_prep.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\mask_blocks.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\mask_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\mask_resize.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\median.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\pyr_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\pyr_pass.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\pyr_reduce.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\pyr_seed.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\pyr_top.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\recalc.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_apply.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_fallback.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_flag.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_halfpel.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_init.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_pass.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\refine_qpel.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\sadf_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\seed_build.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\seed_scatter.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\super.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\super_common.glsl">
+      <Filter>Shader Files</Filter>
+    </None>
+    <None Include="..\src\shaders\super_qpel.comp">
+      <Filter>Shader Files</Filter>
+    </None>
+  </ItemGroup>
+</Project>

@@ -1,0 +1,96 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "degrain_common.glsl"
+
+layout(local_size_x = 64) in;
+
+// mvu.Degrain's DegrainWeight, 256 (1 - r^2) / (1 + r^2) truncated with r = sad / th in double
+// precision, from the reference's 256 weight steps at tables[at] (Degrain.cpp's WeightSteps): the
+// largest k whose step, the least SAD with a weight under k, is above the SAD, by binary search. The
+// weight never rises with the SAD, so the steps give exactly mvu's at every SAD.
+uint Weight(int at, uint sad) {
+    uint k = 0u;
+    for (uint jump = 128u; jump != 0u; jump >>= 1u)
+        if (int64_t(sad) < int64_t(tables[at + int(k + jump) - 1]))
+            k += jump;
+    return k == 255u && int64_t(sad) < int64_t(tables[at + 255]) ? 256u : k;
+}
+
+// normaliseWeights' share of a weighted reference weight a of the total s, int(a * (256.0 / s))
+// in double precision, for 0 <= a < s, exactly. Where 256 a / s isn't an integer, the double's
+// error can't reach the next integer, so it truncates to the quotient. Where it is one, q, the
+// result is q or q - 1, depending on how 256 / s and the product round: c = 256 / s rounded to
+// 53 bits is m * 2^-K, computed by long division, and a * c falls short of q by D * 2^-K. The product
+// rounds to q unless it lies more than half the gap below q away (q's own mantissa is even, so a
+// tie goes to q).
+uint Normalised(uint a, uint s) {
+    if (a == 0u)
+        return 0u;
+    uint q;
+    bool divides;
+    if (a < (1u << 24u)) {
+        uint num = a << 8u;
+        q = num / s;
+        divides = num % s == 0u;
+    } else {
+        uint64_t num = uint64_t(a) << 8u;
+        q = uint(num / uint64_t(s));
+        divides = num % uint64_t(s) == 0ul;
+    }
+    if (!divides || (s & (s - 1u)) == 0u)
+        return q; // inexact, or 256 / s itself exact
+    int L = findMSB(s) + 1, K = 44 + L;
+    uint64_t A = 1ul << uint(20 + L);
+    uint64_t qa = A / uint64_t(s), ra = A % uint64_t(s);
+    uint64_t hi = ra << 32u;
+    uint64_t m = (qa << 32u) + hi / uint64_t(s), rem = hi % uint64_t(s);
+    if (2ul * rem > uint64_t(s) || (2ul * rem == uint64_t(s) && (m & 1ul) != 0ul))
+        ++m;
+    if (m == (1ul << 53u)) {
+        m = 1ul << 52u;
+        --K;
+    }
+    uint64_t qK = K >= 64 ? 0ul : (uint64_t(q) << uint(K));
+    int64_t D = int64_t(qK - uint64_t(a) * m); // |D| <= a / 2, exact despite the wrap
+    if (D <= 0l)
+        return q;
+    int texp = K + findMSB(q) - 53 - ((q & (q - 1u)) == 0u ? 1 : 0);
+    if (texp < 0)
+        return q - 1u;
+    return D > (1l << uint(texp)) ? q - 1u : q;
+}
+
+// Every block's weights, mvu.Degrain's useBlock and normaliseWeights for luma and for chroma: each
+// reference's weight from its SAD and thsad, zero for a reference without vectors, out of the clip
+// or at a scene change; scaled by the user weights and normalised so that with the centre's they
+// add up to 256. Writes meta (degrain_common.glsl). Lane per block, dispatched as (nb + 63) / 64
+// workgroups.
+void main() {
+    int b = int(gl_GlobalInvocationID.x);
+    if (b >= Blocks())
+        return;
+    int bx = b % pc.nbx, by = b / pc.nbx;
+    int totalL = 256 * tables[pc.uwOff] + 1, totalC = totalL;
+    for (int r = 0; r < pc.refs; ++r) {
+        if (Usable(r) && counts[r] <= uint(pc.scdLimit)) {
+            uint sad = uint(Record(r, bx, by).z);
+            int uw = tables[pc.uwOff + 1 + r];
+            totalL += int(Weight(pc.thOff + 256 * r, sad)) * uw;
+            totalC += int(Weight(pc.thOff + 256 * (pc.refs + r), sad)) * uw;
+        }
+    }
+    int centreL = 256, centreC = 256;
+    for (int r = 0; r < pc.refs; ++r) {
+        uint wl = 0u, wc = 0u;
+        if (Usable(r) && counts[r] <= uint(pc.scdLimit)) {
+            uint sad = uint(Record(r, bx, by).z);
+            int uw = tables[pc.uwOff + 1 + r];
+            wl = Normalised(Weight(pc.thOff + 256 * r, sad) * uint(uw), uint(totalL));
+            wc = Normalised(Weight(pc.thOff + 256 * (pc.refs + r), sad) * uint(uw), uint(totalC));
+        }
+        centreL -= int(wl);
+        centreC -= int(wc);
+        meta[(1 + r) * Blocks() + b] = wl | (wc << 16u);
+    }
+    meta[b] = uint(max(centreL, 0)) | (uint(max(centreC, 0)) << 16u);
+}

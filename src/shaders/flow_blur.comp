@@ -1,0 +1,132 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#include "flow_common.glsl"
+
+layout(local_size_x = 64) in;
+
+// mvu.FlowBlur's pixel of the plane (FlowBlur.cpp's FlowBlur_scalar): the frame's own super, bound as
+// src, sampled along the pixel's forward (F, bound as vecF) and backward (B, as vecB) vectors scaled by
+// blur256 (pc.time256), (largest component / prec) >> 8 samples each way, prec being pc.time4096FX, and
+// averaged with the pixel itself; or the clip's pixel where either vector frame is at a scene change
+// (counts[0] or counts[1] above the limit). Integer sums are exact as mvu's int64 ones; float sums in
+// double, as mvu's, exact for ordinary sample values, so that their order doesn't matter (a device
+// without doubles sums floats in float). Chroma's lanes make U and V together, along the same
+// vectors. Dispatched as ((width + 63) / 64, height) workgroups per plane, luma and chroma.
+
+// C++'s a / b for b > 0, truncated toward zero
+int DivT(int a, int b) {
+    return a >= 0 ? a / b : -(-a / b);
+}
+
+#if MVGPU_FLOAT64
+#define SumF double
+#define SumF2 dvec2
+#else
+#define SumF float
+#define SumF2 vec2
+#endif
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x), y = int(gl_WorkGroupID.y);
+    if (x >= pc.width)
+        return;
+    bool chroma = pc.plane != 0;
+    uint at = uint(y * pc.outStride + x);
+    uint limit = uint(pc.scdLimit);
+    if (counts[0] > limit || counts[1] > limit) {
+        uint c = uint(y * pc.clipStride + x);
+        if (kFloat) {
+            outPxF[at] = clipSrcF[c];
+            if (chroma)
+                outPxVF[at] = clipSrcVF[c];
+        } else {
+            Store(at, ClipPx(false, c));
+            if (chroma)
+                StoreV(at, ClipPxV(false, c));
+        }
+        return;
+    }
+    Weights(x, y);
+    ivec2 vF = VectorAt(0), vB = VectorAt(1);
+    int blur = pc.time256, prec = pc.time4096FX;
+    int vxF0 = vF.x * blur, vyF0 = vF.y * blur, vxB0 = vB.x * blur, vyB0 = vB.y * blur;
+    int mF = (max(abs(vxF0), abs(vyF0)) / prec) >> 8, mB = (max(abs(vxB0), abs(vyB0)) / prec) >> 8;
+    int xBase = x * kPel, yBase = y * kPel;
+    // Each way's steps: the scaled vector divided by its count, truncated as C++ divides
+    int dxF = mF > 0 ? DivT(vxF0, mF) : 0, dyF = mF > 0 ? DivT(vyF0, mF) : 0;
+    int dxB = mB > 0 ? DivT(vxB0, mB) : 0, dyB = mB > 0 ? DivT(vyB0, mB) : 0;
+    uint n = uint(mF + mB + 1);
+    if (kFloat && chroma) {
+        SumF2 sum = SumF2(SampleUVF(false, xBase, yBase));
+        int vx = dxF, vy = dyF;
+        for (int i = 0; i < mF; ++i) {
+            sum += SumF2(SampleUVF(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+            vx += dxF;
+            vy += dyF;
+        }
+        vx = dxB;
+        vy = dyB;
+        for (int i = 0; i < mB; ++i) {
+            sum += SumF2(SampleUVF(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+            vx += dxB;
+            vy += dyB;
+        }
+        vec2 r = vec2(sum / SumF(n));
+        outPxF[at] = r.x;
+        outPxVF[at] = r.y;
+        return;
+    }
+    if (kFloat) {
+        SumF sum = SumF(SampleF(false, xBase, yBase));
+        int vx = dxF, vy = dyF;
+        for (int i = 0; i < mF; ++i) {
+            sum += SumF(SampleF(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+            vx += dxF;
+            vy += dyF;
+        }
+        vx = dxB;
+        vy = dyB;
+        for (int i = 0; i < mB; ++i) {
+            sum += SumF(SampleF(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+            vx += dxB;
+            vy += dyB;
+        }
+        outPxF[at] = float(sum / SumF(n));
+        return;
+    }
+    if (chroma) {
+        u64vec2 sum = u64vec2(SampleUV(false, xBase, yBase));
+        int vx = dxF, vy = dyF;
+        for (int i = 0; i < mF; ++i) {
+            sum += u64vec2(SampleUV(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+            vx += dxF;
+            vy += dyF;
+        }
+        vx = dxB;
+        vy = dyB;
+        for (int i = 0; i < mB; ++i) {
+            sum += u64vec2(SampleUV(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+            vx += dxB;
+            vy += dyB;
+        }
+        Store(at, sum.x <= uint64_t(0xFFFFFFFFu) ? uint(sum.x) / n : uint(sum.x / uint64_t(n)));
+        StoreV(at, sum.y <= uint64_t(0xFFFFFFFFu) ? uint(sum.y) / n : uint(sum.y / uint64_t(n)));
+        return;
+    }
+    uint64_t sum = uint64_t(Sample(false, xBase, yBase));
+    int vx = dxF, vy = dyF;
+    for (int i = 0; i < mF; ++i) {
+        sum += uint64_t(Sample(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+        vx += dxF;
+        vy += dyF;
+    }
+    vx = dxB;
+    vy = dyB;
+    for (int i = 0; i < mB; ++i) {
+        sum += uint64_t(Sample(false, (vx >> 8) + xBase, (vy >> 8) + yBase));
+        vx += dxB;
+        vy += dyB;
+    }
+    Store(at, sum <= uint64_t(0xFFFFFFFFu) ? uint(sum) / n : uint(sum / uint64_t(n)));
+}

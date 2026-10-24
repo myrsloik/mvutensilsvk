@@ -1,0 +1,32 @@
+[build-system]
+requires = ["meson-python", "VapourSynth>=80"]
+build-backend = "mesonpy"
+
+[project]
+name = "vapoursynth-mvutensilsvk"
+description = "Motion estimation and denoising filter for VapourSynth, on the GPU"
+readme = "readme.md"
+requires-python = ">=3.12"
+license = "GPL-2.0"
+license-files = ["LICENSE"]
+keywords = ["video", "motion estimation", "denoising", "vulkan", "gpu"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Plugins",
+    "Natural Language :: English",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX",
+    "Operating System :: Unix",
+    "Programming Language :: C++",
+    "Topic :: Multimedia :: Video",
+]
+dependencies = ["VapourSynth>=80"]
+dynamic = ["version"]
+
+[project.urls]
+Repository = "https://github.com/myrsloik/mvutensilsvk.git"
+Issues = "https://github.com/myrsloik/mvutensilsvk/issues"
+
+[tool.meson-python.wheel]
+exclude = ["*/*.dll.a", "*/*.lib"]

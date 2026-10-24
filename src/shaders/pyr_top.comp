@@ -1,0 +1,45 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define BLOCKS_PER_WORKGROUP 1
+#define LEVEL_BLOCKS
+#extension GL_EXT_shader_subgroup_extended_types_int64 : require
+#include "pyr_common.glsl"
+
+layout(local_size_x_id = 1) in;
+
+// The exhaustive search at the top level (pc.level): every position within +-topRadius px that
+// keeps the reference block within the level's padding; the lowest cost wins, the SAD with pnew's
+// penalty but at zero (mvu's coarsest level takes zero as its predictor, which goes unpenalized), ties
+// to the shorter vector and then to the earlier position in scan order. One block per
+// workgroup of one subgroup, its positions spread over the lanes, each lane keeping the least key
+// cost << 25 | length << 13 | position (a cost is below 2^33, a SAD below 2^32 and pnew's penalty at
+// most the SAD, which float SADs of samples far outside their range reach; a length below 2^12 and a
+// position below 2^13 within topRadius 32); dispatched as (nbx, nby, fields in the batch) of the level.
+void main() {
+    Level lv = levels[pc.level];
+    uint lane = gl_SubgroupInvocationID;
+    int bx = int(gl_WorkGroupID.x), by = int(gl_WorkGroupID.y);
+    SetupField(int(gl_WorkGroupID.z));
+    LoadLevelBlock(0, int(lane), kSubgroup, lv, bx, by, true);
+    barrier();
+
+    ivec2 lo = LevelBound(lv, ivec2(-pc.topRadius)), hi = LevelBound(lv, ivec2(pc.topRadius));
+    int nx = hi.x - lo.x + 1, total = nx * (hi.y - lo.y + 1);
+    uint64_t mine = ~0ul;
+    for (int k = int(lane); k < total; k += kSubgroup) {
+        ivec2 v = lo + ivec2(k % nx, k / nx);
+        uint s = LevelSadOf(lv, v);
+        int64_t cost = int64_t(s) + (v == ivec2(0) ? 0l : Penalty(s, PNew()));
+        uint64_t key = (uint64_t(cost) << 25) | (uint64_t(v.x * v.x + v.y * v.y) << 13) | uint64_t(k);
+        mine = min(mine, key);
+    }
+    uint64_t best = subgroupMin(mine);
+    int k = int(best & 0x1FFFul);
+    ivec2 v = lo + ivec2(k % nx, k / nx);
+    uint s = LevelSadOf(lv, v); // the winner's SAD (its key holds its cost)
+    if (lane == 0u) {
+        int b = gFieldBase + lv.fieldOff + by * lv.nbx + bx;
+        levelVec[b] = v;
+        levelSad[b] = s;
+    }
+}

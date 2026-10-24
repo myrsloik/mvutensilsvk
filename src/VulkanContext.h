@@ -1,0 +1,320 @@
+#pragma once
+
+// The Vulkan side every mvgpu filter shares: the core's device and dispatch table, the
+// descriptor layouts the kernels use (storage buffers pushed with every dispatch, or for Degrain a
+// descriptor set per frame, plus the push constants), the kernels' pipelines, compiled once per
+// core and variant, and a recorder for the dispatches of one submission. Filters keep a shared_ptr to it, so the pipelines live until the
+// last instance on the core is freed.
+
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include <VapourSynth4.h>
+#include <VSVulkan4.h>
+
+// The kernels in src/shaders
+enum class Kernel {
+    Super,
+    SuperQuarter,
+    PyrReduce,
+    PyrTop,
+    PyrPass,
+    PyrSeed,
+    Median,
+    SeedScatter,
+    SeedBuild,
+    RefineInit,
+    RefinePass,
+    RefineFlag,
+    RefineFallback,
+    RefineApply,
+    RefineHalfpel,
+    RefineQuarter,
+    DegrainCount,
+    DegrainWeights,
+    DegrainPixels,
+    FlowPrep,
+    FlowInter,
+    FlowFetch,
+    FlowBlur,
+    MaskBlocks,
+    MaskResize,
+    Compensate,
+    Recalculate,
+};
+
+// The bindings, as the kernels declare them (refine_common.glsl, pyr_common.glsl, super.comp,
+// refine_halfpel.comp)
+enum Binding {
+    kCurLuma, kRefLuma, kCurChroma, kRefChroma,
+    kSeeds, kSeedCount, kSeedSad,
+    kVecA, kSadA, kVecB, kSadB,
+    kLambda, kLastChange, kLastEval, kCounters, kFlagged,
+    kCurPyramid, kRefPyramid, kLevelVec, kLevelSad, kLevels, kLevelLambda, kMedians,
+    kStepRec, kRestRec, kInvRec, kOutRec, kInvKey, kCoarse,
+    kRawY, kRawU, kRawV,
+    kBindings,
+    // Super's kernels (super_common.glsl) take the pelclip's planes where the search has its seeds
+    kPelY = kSeeds, kPelU = kSeedCount, kPelV = kSeedSad,
+};
+
+// The descriptor layouts. Main: bindings 0 .. 31, one buffer each, for every kernel but the
+// coarse search's and Degrain's. Coarse: the coarse search's bindings 16 .. 22 (pyr_common.glsl),
+// binding 17 an array of the batch's reference pyramids, kMaxBatch of them. Both together would
+// exceed the 32 descriptors a push descriptor set is guaranteed, so they are two. Degrain: a
+// descriptor set allocated per frame rather than pushed (DegrainBinding), since every reference
+// brings three buffers.
+enum class Layout {
+    Main,
+    Coarse,
+    Degrain,
+};
+
+// The Degrain layout's bindings (degrain_common.glsl): the centre's super planes, the blocks'
+// weights, the tables, the scene change counts, the output planes (3), and each reference's super
+// planes and vectors, kMaxDegrainRefs of each
+enum DegrainBinding {
+    kDgCurLuma, kDgCurChroma, kDgMeta, kDgTables, kDgCounts, kDgOut, kDgRefLuma, kDgRefChroma, kDgRefVec,
+    kDgBindings
+};
+constexpr int kMaxDegrainRefs = 50; // 2 * the largest radius, degrain_common.glsl's kMaxRefs
+
+// The Flow kernels' bindings in the Main layout (flow_common.glsl): the two supers' planes (the frame
+// before and the one after), the vector frames (F and B, and FF and BB for the extra masks), the
+// blocks' occlusion masks and scene change counts, the clip's planes for the blend, the output
+// plane, the resize's taps; and for chroma, which a dispatch makes U and V of together, V's output
+// plane and clip planes (U's at kFlOut, kFlClipSrc and kFlClipRef)
+enum FlowBinding {
+    kFlSrcLuma, kFlSrcChroma, kFlRefLuma, kFlRefChroma, kFlVecF, kFlVecB, kFlVecFF, kFlVecBB,
+    kFlMasks, kFlCounts, kFlClipSrc, kFlClipRef, kFlOut, kFlTaps, kFlOutV, kFlClipSrcV, kFlClipRefV,
+};
+
+// The push constants of every layout: 128 bytes, as many as every device is guaranteed to take
+// (maxPushConstantsSize); each kernel's parameters fit in them
+constexpr uint32_t kPushBytes = 128;
+
+// Push constants, matching refine_common.glsl's Params
+struct Params {
+    int32_t nbx, nby, step, stepY;
+    int32_t pad, padY, padc, padcY;
+    int32_t wp, hp, wc, hc;
+    int32_t fallbackRadius, fallbackStep, badSad, maxSeeds;
+    int32_t stamp, level, flags, topRadius;
+    int32_t medianScale, medianSlot, finest, blockRows;
+    int32_t colour, recStride, coarseBase, aw;
+    int32_t ah, penalties, moveRadius;
+};
+static_assert(sizeof(Params) == 124, "refine_common.glsl's Params is 31 ints");
+
+// Super's push constants (super.comp, super_qpel.comp, pyr_reduce.comp), matching
+// super_common.glsl's Params; they share the Main layout and its push constant range
+struct SuperParams {
+    int32_t w, h, aw, ah;
+    int32_t padX, padY, padcX, padcY;
+    int32_t wp, hp, wc, hc;
+    int32_t lumaPlanes, chromaPlanes, xr, yr;
+    int32_t planes, step, sharp, pixelMax;
+    int32_t srcStrideY, srcStrideC, pelStrideY, pelStrideC;
+    int32_t level, rfilter, pel, quad;
+};
+static_assert(sizeof(SuperParams) <= kPushBytes, "super_common.glsl's Params must fit the push constants");
+
+// Degrain's push constants, matching degrain_common.glsl's Params
+struct DegrainParams {
+    int32_t nbx, nby, step, stepY;
+    int32_t overlap, overlapY, pad, padY;
+    int32_t padc, padcY, aw, ah;
+    int32_t wp, hp, wc, hc;
+    int32_t recStride, refs;
+    uint32_t usable0, usable1;
+    int32_t thscd1, scdLimit;
+    int32_t plane, width, height, outStride;
+    int32_t limit, winOff, thOff, uwOff;
+    int32_t pixelMax;
+    float limitF;
+};
+static_assert(sizeof(DegrainParams) == kPushBytes, "degrain_common.glsl's Params is 32 ints");
+
+// The Flow kernels' push constants, matching flow_common.glsl's Params; they share the Main layout.
+// flow_blur.comp takes blur256 in time256 and prec in time4096FX; compensate.comp its grid's step
+// and overlap in time4096FX and time4096FY, horizontally, and in stepY and overlapY vertically.
+struct FlowParams {
+    int32_t nbx, nby, recStride, flags;
+    int32_t pad, padY, padc, padcY;
+    int32_t wp, hp, wc, hc;
+    int32_t plane, width, height, outStride;
+    int32_t clipStride, time256, thscd1, scdLimit;
+    int32_t colOff, rowOff;
+    float occnormX, occnormY;
+    int32_t time4096FX, time4096FY, time4096BX, time4096BY;
+    int32_t stepY, overlapY;
+};
+static_assert(sizeof(FlowParams) == 120, "flow_common.glsl's Params is 30 words");
+
+// The mask kernels' push constants (mask_blocks.comp, mask_resize.comp), matching mask_common.glsl's
+// Params; they share the Main layout
+struct MaskParams {
+    int32_t nbx, nby, recStride, kind;
+    int32_t width, height, outStride, flags;
+    int32_t thscd1, scdLimit, pel, maxVal;
+    int32_t time4096X, time4096Y, sadShift, backward;
+    float norm, normY, gamma, scvalF;
+    int32_t scval, colOff, rowOff, countSlot;
+};
+static_assert(sizeof(MaskParams) <= kPushBytes, "mask_common.glsl's Params must fit the push constants");
+
+// The mask kernels' bindings in the Main layout (mask_common.glsl): the vector records, the blocks'
+// mask values, the scene change count, the output plane, the resize's taps
+enum MaskBinding {
+    kMkVectors, kMkValues, kMkCounts, kMkOut, kMkTaps,
+};
+
+// Recalculate's push constants (recalc.comp's Params); it runs in the Main layout with bindings of its
+// own: the supers' luma and chroma of the frame and of its reference frame (0 .. 3), the old vectors
+// (4) and the new ones (5)
+struct RecalcParams {
+    int32_t nbx, nby, step, recStride;
+    int32_t nbxOld, nbyOld, blkOld, stepOld;
+    int32_t recStrideOld, pad, padY, padc;
+    int32_t padcY, wp, hp, wc;
+    int32_t hc, aw, ah, lambda;
+    int32_t thsad, pnew, search, searchParam;
+    int32_t smoothing, oldPelShift, stepY, blkOldY;
+    int32_t stepOldY, thsadHi;
+};
+static_assert(sizeof(RecalcParams) <= kPushBytes, "recalc.comp's Params must fit the push constants");
+
+class Recorder;
+// Records mask_blocks.comp (count, a MaskBlocks pipeline) counting the blocks of a vector frame
+// (records recStride apart) whose SAD is above thscd1 into the uint slot of counts, which must start at
+// zero; it binds MaskBinding's kMkVectors and kMkCounts, which the caller rebinds after
+void RecordBadBlockCount(Recorder &rec, VkPipeline count, VkBuffer vectors, int recStride, int nbx, int nby, int thscd1, VkBuffer counts, int slot);
+
+class VulkanContext {
+public:
+    // The context of the core's device, created with the first filter that asks; throws when the
+    // core has no usable Vulkan device or the device lacks what the kernels need
+    static std::shared_ptr<VulkanContext> Get(VSCore *core, const VSAPI *vsapi);
+    ~VulkanContext();
+    VulkanContext(const VulkanContext &) = delete;
+    VulkanContext &operator=(const VulkanContext &) = delete;
+
+    // The kernel's pipeline for blocks of blk x blkY (blk x blk with blkY 0) and vectors of 1 / pel
+    // pixels, compiled on first use; filters ask for theirs when they are created, not while producing
+    // frames. variant is specialization constant 6, the super kernels' sample kind (SuperFormat::Kind).
+    VkPipeline Pipeline(Kernel kernel, int blk, int pel, int variant = 0, int blkY = 0);
+
+    // A device-local storage buffer holding size bytes of data, copied there through the pool and
+    // waited for: the tables a filter reads for its whole life, uploaded when it is created.
+    // Throws on failure.
+    VSGPUBuffer *Upload(VSCore *core, VSGPUExecPool *pool, const void *data, VkDeviceSize size, VSVulkanBufferInfo &info) const;
+
+    // A layout's bindings, (binding, descriptor count) in binding order
+    const std::vector<std::pair<uint32_t, uint32_t>> &LayoutBindings(Layout layout) const { return bindings[static_cast<int>(layout)]; }
+    VkPipelineLayout PipelineLayout(Layout layout) const { return layouts[static_cast<int>(layout)]; }
+    VkDescriptorSetLayout SetLayout(Layout layout) const { return setLayouts[static_cast<int>(layout)]; }
+    // Throws when the device can't hold the Degrain layout's descriptors
+    void RequireDegrain() const;
+    // Throws when the kernels with a lane per block can't take a grid of this many blocks: they are
+    // dispatched as (blocks + 63) / 64 workgroups, more than the device's maxComputeWorkGroupCount
+    // from some 4.2 million blocks where it has Vulkan's least, 65535
+    void RequireBlockLanes(int64_t blocks) const;
+
+    const VSVULKANAPI *vkapi = nullptr;
+    const VSVulkanFunctions *vk = nullptr;
+    VkDevice device = VK_NULL_HANDLE;
+    VkPhysicalDeviceLimits limits = {};
+    std::string deviceName;
+    uint32_t subgroup = 32;      // lanes per subgroup, every pipeline's required subgroup size
+    bool float64 = false;        // the device has 64-bit floats in shaders: kernels see MVGPU_FLOAT64 1
+    uint32_t medianLanes = 1024; // median.comp's workgroup, within the device's subgroups per workgroup
+
+    static constexpr int kFallbackSubgroups = 4; // subgroups searching each block the fallback flags
+    static constexpr int kMaxBatch = 16;         // fields per coarse search batch: pyr_common.glsl's kMaxBatch
+
+private:
+    VulkanContext(VSCore *core, const VSAPI *vsapi);
+    void Destroy();
+
+    VSCore *core;
+    std::mutex lock;
+    std::map<std::tuple<int, int, int, int, int>, VkPipeline> pipelines;
+    static constexpr int kLayouts = 3;
+    std::vector<std::pair<uint32_t, uint32_t>> bindings[kLayouts];
+    VkDescriptorSetLayout setLayouts[kLayouts] = {};
+    VkPipelineLayout layouts[kLayouts] = {};
+    std::string degrainError; // why the Degrain layout couldn't be made, empty when it was
+};
+
+// GPU time per stage of a filter's submissions, with the environment variable MVGPU_PROFILE set:
+// every submission gets a query pool and a timestamp after each stage, and is waited for once
+// submitted, which serializes the frames, so it is for measuring only. The stages' times add up
+// and go to stderr when the filter is freed. Stamps for a stage that didn't run come back to back.
+class StageProfiler {
+public:
+    StageProfiler(std::string name, std::vector<std::string> stages);
+    ~StageProfiler();
+
+    static bool Requested();
+
+    // Before the first stage; then Stamp after stage i = 1 .. stages.size()
+    VkQueryPool Begin(const VulkanContext &vc, VkCommandBuffer cmd) const;
+    void Stamp(const VulkanContext &vc, VkCommandBuffer cmd, VkQueryPool pool, int stage) const;
+    // After the submit: waits for it, adds up its stages, frees the pool
+    void Finish(const VulkanContext &vc, VSGPUExecPool *execPool, uint64_t signaled, VkQueryPool pool);
+
+private:
+    std::string name;
+    std::vector<std::string> stages;
+    std::mutex lock;
+    std::vector<double> sums; // ms
+    int64_t runs = 0;
+};
+
+// The dispatches of one submission into an exec context's command buffer, all with pipelines of
+// one layout. Every binding holds a buffer, a dummy until Bind says otherwise, and all of them are
+// pushed before a dispatch whenever one changed; push constants go with every dispatch.
+class Recorder {
+public:
+    Recorder(const VulkanContext &vc, VkCommandBuffer cmd, VkBuffer dummy, Layout layout = Layout::Main);
+
+    // element: the place in an array binding
+    void Bind(int binding, VkBuffer buffer, VkDeviceSize offset = 0, VkDeviceSize range = VK_WHOLE_SIZE, int element = 0);
+    void Dispatch(VkPipeline pipeline, const Params &pc, uint32_t x, uint32_t y, uint32_t z = 1);
+    void Dispatch(VkPipeline pipeline, const SuperParams &pc, uint32_t x, uint32_t y, uint32_t z = 1);
+    void Dispatch(VkPipeline pipeline, const FlowParams &pc, uint32_t x, uint32_t y, uint32_t z = 1);
+    void Dispatch(VkPipeline pipeline, const MaskParams &pc, uint32_t x, uint32_t y, uint32_t z = 1);
+    void Dispatch(VkPipeline pipeline, const RecalcParams &pc, uint32_t x, uint32_t y, uint32_t z = 1);
+    void DispatchIndirect(VkPipeline pipeline, const Params &pc, VkBuffer args, VkDeviceSize offset);
+
+    void Fill(VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, uint32_t value);
+    void Copy(VkBuffer src, VkDeviceSize srcOffset, VkBuffer dst, VkDeviceSize dstOffset, VkDeviceSize size);
+
+    // Compute writes before compute reads and writes
+    void ComputeBarrier();
+    // Compute writes before an indirect dispatch reads its arguments, and before compute
+    void IndirectBarrier();
+    // Compute reads and writes before transfers, and transfer writes before compute
+    void ComputeToTransfer();
+    void TransferToCompute();
+    // Compute writes before the host reads them, once the submission has completed
+    void ComputeToHost();
+
+private:
+    void Barrier(VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess);
+    void Prepare(VkPipeline pipeline, const void *pc, uint32_t size);
+
+    const VulkanContext &vc;
+    VkCommandBuffer cmd;
+    VkPipelineLayout layout;
+    const std::vector<std::pair<uint32_t, uint32_t>> &bindings;
+    std::vector<VkDescriptorBufferInfo> infos; // every binding's descriptors, in binding order
+    int first[kBindings];                      // where each binding starts in infos, -1 when the layout lacks it
+    bool dirty = true;
+};
